@@ -9,31 +9,43 @@ def fetch_pairs_data(symbol1: str, symbol2: str, start: str, end: str, interval:
     """
     print(f"Fetching {interval} data for {symbol1} and {symbol2} from {start} to {end}...")
     
-    # Download both assets
-    df1 = yf.download(symbol1, start=start, end=end, interval=interval)
-    df2 = yf.download(symbol2, start=start, end=end, interval=interval)
+    # FIX 1: Wikipedia formats tickers like Berkshire Hathaway as BRK.B, but Yahoo expects BRK-B. 
+    # We replace the dot with a dash, unless it's an Indian stock (.NS) which actually needs the dot.
+    symbol1 = symbol1.replace('.', '-') if '.NS' not in symbol1 else symbol1
+    symbol2 = symbol2.replace('.', '-') if '.NS' not in symbol2 else symbol2
+
+    # FIX 2: Use Ticker().history() instead of download() for much better reliability on Streamlit Cloud
+    tkr1 = yf.Ticker(symbol1)
+    tkr2 = yf.Ticker(symbol2)
+    
+    df1 = tkr1.history(start=start, end=end, interval=interval)
+    df2 = tkr2.history(start=start, end=end, interval=interval)
     
     if df1.empty or df2.empty:
-        raise ValueError("Failed to fetch data for one or both symbols. Check tickers or dates.")
+        failed_syms = []
+        if df1.empty: failed_syms.append(symbol1)
+        if df2.empty: failed_syms.append(symbol2)
+        raise ValueError(f"Yahoo Finance returned empty data for: {', '.join(failed_syms)}. Check if the ticker is valid or if the market was closed.")
         
-    # Flatten MultiIndex columns if yfinance returns them
-    if isinstance(df1.columns, pd.MultiIndex):
-        df1.columns = df1.columns.get_level_values(0)
-    if isinstance(df2.columns, pd.MultiIndex):
-        df2.columns = df2.columns.get_level_values(0)
+    # FIX 3: Strip timezones from the data. 
+    # If you pair a US stock and an Indian stock, their timezones won't match and pandas will crash.
+    df1.index = pd.to_datetime(df1.index).tz_localize(None)
+    df2.index = pd.to_datetime(df2.index).tz_localize(None)
         
     # Create a new DataFrame with aligned closing prices
-    # We use .dropna() to remove any days where one stock traded but the other didn't (e.g., trading halts)
+    # .dropna() ensures we only trade on days where BOTH markets were open
     combined_df = pd.DataFrame({
         'asset1': df1['Close'],
         'asset2': df2['Close']
     }).dropna()
     
+    if combined_df.empty:
+        raise ValueError(f"Data fetched successfully, but the dates did not overlap between {symbol1} and {symbol2}. Ensure you aren't mixing intraday timeframes across different global timezones.")
+    
     return combined_df
 
 # --- TEST BLOCK ---
 if __name__ == "__main__":
-    # Let's test with two highly correlated tech stocks
     sym1 = 'AAPL'
     sym2 = 'MSFT'
     
